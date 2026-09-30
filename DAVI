@@ -1,0 +1,803 @@
+--Made by DAVI HUB / Discord.gg/pulsezone --
+local Slate_modules = {}
+local Slate_cache = {}
+local function Slate_require(name)
+    local hit = Slate_cache[name]
+    if hit ~= nil then
+        return hit
+    end
+    local factory = Slate_modules[name]
+    if not factory then
+        error("Slate: unknown module '" .. tostring(name) .. "'", 2)
+    end
+    local value = factory(Slate_require)
+    if value == nil then
+        value = true
+    end
+    Slate_cache[name] = value
+    return value
+end
+Slate_modules["core/Util"] = function(require)
+local Util = {}
+
+local nextId = 0
+
+function Util.uid(prefix)
+    nextId += 1
+    return (prefix or "slate") .. "_" .. nextId
+end
+
+function Util.new(class, props, children)
+    local inst = Instance.new(class)
+    local parent
+    if props then
+        for key, value in pairs(props) do
+            if key == "Parent" then
+                parent = value
+            else
+                inst[key] = value
+            end
+        end
+    end
+    if children then
+        for _, child in ipairs(children) do
+            child.Parent = inst
+        end
+    end
+    if parent then
+        inst.Parent = parent
+    end
+    return inst
+end
+
+function Util.clamp(value, min, max)
+    if value < min then
+        return min
+    elseif value > max then
+        return max
+    end
+    return value
+end
+
+function Util.round(value, decimals)
+    local mult = 10 ^ math.max(0, math.floor(decimals or 0))
+    return math.floor(value * mult + 0.5) / mult
+end
+
+function Util.lerp(a, b, t)
+    return a + (b - a) * t
+end
+
+function Util.alpha(value, min, max)
+    if max == min then
+        return 0
+    end
+    return Util.clamp((value - min) / (max - min), 0, 1)
+end
+
+function Util.str(value, fallback)
+    if type(value) == "string" then
+        return value
+    end
+    if value == nil then
+        return fallback
+    end
+    if type(value) == "number" or type(value) == "boolean" then
+        return tostring(value)
+    end
+    return fallback
+end
+
+function Util.num(value, fallback)
+    local converted = tonumber(value)
+    if converted == nil or converted ~= converted then
+        return fallback
+    end
+    return converted
+end
+
+function Util.bool(value, fallback)
+    if type(value) == "boolean" then
+        return value
+    end
+    return fallback
+end
+
+function Util.fn(value)
+    if type(value) == "function" then
+        return value
+    end
+    return nil
+end
+
+function Util.list(value)
+    if type(value) ~= "table" then
+        return {}
+    end
+    local out = {}
+    for index, item in ipairs(value) do
+        out[index] = item
+    end
+    return out
+end
+
+function Util.indexOf(list, value)
+    for index, item in ipairs(list) do
+        if item == value then
+            return index
+        end
+    end
+    return nil
+end
+
+function Util.remove(list, value)
+    local index = Util.indexOf(list, value)
+    if index then
+        table.remove(list, index)
+        return true
+    end
+    return false
+end
+
+function Util.merge(target, patch)
+    for key, value in pairs(patch) do
+        target[key] = value
+    end
+    return target
+end
+
+function Util.copy(source)
+    local out = {}
+    for key, value in pairs(source) do
+        out[key] = value
+    end
+    return out
+end
+
+function Util.count(source)
+    local total = 0
+    for _ in pairs(source) do
+        total += 1
+    end
+    return total
+end
+
+function Util.normalise(text)
+    return (string.lower(tostring(text or "")):gsub("[^%w]", ""))
+end
+
+function Util.matches(haystack, needle)
+    if needle == "" then
+        return true
+    end
+    return string.find(Util.normalise(haystack), needle, 1, true) ~= nil
+end
+
+function Util.dispatch(callback, ...)
+    if type(callback) ~= "function" then
+        return
+    end
+    local args = table.pack(...)
+    task.spawn(function()
+        local ok, err = pcall(callback, table.unpack(args, 1, args.n))
+        if not ok then
+            require("core/Log").error("callback", err)
+        end
+    end)
+end
+
+function Util.guiInset()
+    local ok, inset = pcall(function()
+        return game:GetService("GuiService"):GetGuiInset()
+    end)
+    if ok and typeof(inset) == "Vector2" then
+        return inset
+    end
+    return Vector2.new(0, 0)
+end
+
+local executorName, executorVersion, executorProbed = nil, nil, false
+
+function Util.executor()
+    if executorProbed then
+        return executorName, executorVersion
+    end
+    executorProbed = true
+    local names = { "identifyexecutor", "getexecutorname", "get_executor_name" }
+    for _, name in ipairs(names) do
+        local fn = rawget(getfenv(), name)
+        if type(fn) ~= "function" then
+            local ok, value = pcall(function()
+                return getgenv and getgenv()[name] or nil
+            end)
+            fn = ok and value or nil
+        end
+        if type(fn) == "function" then
+            local ok, label, version = pcall(fn)
+            if ok and type(label) == "string" and label ~= "" then
+                executorName = label
+                executorVersion = type(version) == "string" and version ~= "" and version or nil
+                return executorName, executorVersion
+            end
+        end
+    end
+    return nil, nil
+end
+
+function Util.viewport()
+    local camera = workspace.CurrentCamera
+    if camera then
+        return camera.ViewportSize
+    end
+    return Vector2.new(1280, 720)
+end
+
+return Util
+
+end
+Slate_modules["core/Signal"] = function(require)
+local Signal = {}
+Signal.__index = Signal
+
+function Signal.new()
+    return setmetatable({ _handlers = {}, _dead = false }, Signal)
+end
+
+function Signal:Connect(handler)
+    if self._dead or type(handler) ~= "function" then
+        return { Disconnect = function() end, Connected = false }
+    end
+    local entry = { fn = handler, alive = true }
+    table.insert(self._handlers, entry)
+    local connection = {}
+    connection.Connected = true
+    function connection.Disconnect()
+        if not entry.alive then
+            return
+        end
+        entry.alive = false
+        connection.Connected = false
+        for index, candidate in ipairs(self._handlers) do
+            if candidate == entry then
+                table.remove(self._handlers, index)
+                break
+            end
+        end
+    end
+    connection.disconnect = connection.Disconnect
+    return connection
+end
+
+function Signal:Once(handler)
+    local connection
+    connection = self:Connect(function(...)
+        connection.Disconnect()
+        handler(...)
+    end)
+    return connection
+end
+
+function Signal:Fire(...)
+    if self._dead then
+        return
+    end
+    local snapshot = table.clone(self._handlers)
+    for _, entry in ipairs(snapshot) do
+        if entry.alive then
+            local ok, err = pcall(entry.fn, ...)
+            if not ok then
+                require("core/Log").error("signal", err)
+            end
+        end
+    end
+end
+
+function Signal:Count()
+    return #self._handlers
+end
+
+function Signal:Destroy()
+    self._dead = true
+    table.clear(self._handlers)
+end
+
+return Signal
+
+end
+Slate_modules["core/Maid"] = function(require)
+local Maid = {}
+Maid.__index = Maid
+
+function Maid.new()
+    return setmetatable({ _tasks = {}, _dead = false }, Maid)
+end
+
+local function dispose(item)
+    local kind = typeof(item)
+    if kind == "RBXScriptConnection" then
+        item:Disconnect()
+    elseif kind == "Instance" then
+        item:Destroy()
+    elseif kind == "function" then
+        item()
+    elseif kind == "thread" then
+        if coroutine.status(item) == "suspended" then
+            task.cancel(item)
+        end
+    elseif kind == "table" then
+        if type(item.Destroy) == "function" then
+            item:Destroy()
+        elseif type(item.Disconnect) == "function" then
+            item:Disconnect()
+        elseif type(item.disconnect) == "function" then
+            item.disconnect()
+        end
+    end
+end
+
+function Maid:Add(item)
+    if item == nil then
+        return nil
+    end
+    if self._dead then
+        pcall(dispose, item)
+        return item
+    end
+    table.insert(self._tasks, item)
+    return item
+end
+
+function Maid:AddAll(items)
+    for _, item in ipairs(items) do
+        self:Add(item)
+    end
+end
+
+function Maid:Remove(item)
+    for index, candidate in ipairs(self._tasks) do
+        if candidate == item then
+            table.remove(self._tasks, index)
+            return true
+        end
+    end
+    return false
+end
+
+function Maid:Extend()
+    local child = Maid.new()
+    self:Add(child)
+    return child
+end
+
+function Maid:IsDead()
+    return self._dead
+end
+
+function Maid:Clean()
+    local pending = self._tasks
+    self._tasks = {}
+    for index = #pending, 1, -1 do
+        local ok, err = pcall(dispose, pending[index])
+        if not ok then
+            require("core/Log").error("cleanup", err)
+        end
+    end
+end
+
+function Maid:Destroy()
+    if self._dead then
+        return
+    end
+    self._dead = true
+    self:Clean()
+end
+
+return Maid
+
+end
+Slate_modules["core/Log"] = function(require)
+local Log = {}
+
+local enabled = false
+local counters = { warn = 0, error = 0 }
+local history = {}
+local HISTORY_LIMIT = 100
+
+local function record(level, scope, message)
+    local line = string.format("[Slate/%s] %s: %s", level, tostring(scope), tostring(message))
+    table.insert(history, line)
+    if #history > HISTORY_LIMIT then
+        table.remove(history, 1)
+    end
+    return line
+end
+
+function Log.setEnabled(state)
+    enabled = state == true
+end
+
+function Log.isEnabled()
+    return enabled
+end
+
+function Log.warn(scope, message)
+    counters.warn += 1
+    local line = record("warn", scope, message)
+    if enabled then
+        warn(line)
+    end
+end
+
+function Log.error(scope, message)
+    counters.error += 1
+    local line = record("error", scope, message)
+    if enabled then
+        warn(line)
+    end
+end
+
+function Log.expect(condition, scope, message)
+    if not condition then
+        Log.warn(scope, message)
+    end
+    return condition
+end
+
+function Log.field(scope, field, value, expected)
+    Log.warn(scope, string.format(
+        "field '%s' expected %s, got %s (%s)",
+        tostring(field), tostring(expected), typeof(value), tostring(value)
+    ))
+end
+
+function Log.stats()
+    return { warnings = counters.warn, errors = counters.error, entries = #history }
+end
+
+function Log.dump()
+    return table.concat(history, "\n")
+end
+
+function Log.clear()
+    table.clear(history)
+    counters.warn = 0
+    counters.error = 0
+end
+
+return Log
+
+end
+Slate_modules["core/Theme"] = function(require)
+local Signal = require("core/Signal")
+local Log = require("core/Log")
+local Util = require("core/Util")
+
+local Theme = {}
+
+Theme.Changed = Signal.new()
+
+local PALETTES = {
+    Violet = {
+        Background = Color3.fromRGB(11, 11, 16),
+        Surface = Color3.fromRGB(19, 19, 26),
+        SurfaceAlt = Color3.fromRGB(26, 26, 35),
+        Elevated = Color3.fromRGB(31, 31, 42),
+        Border = Color3.fromRGB(255, 255, 255),
+        Line = Color3.fromRGB(255, 255, 255),
+        Text = Color3.fromRGB(240, 240, 246),
+        Muted = Color3.fromRGB(140, 140, 158),
+        Faint = Color3.fromRGB(92, 92, 110),
+        Accent = Color3.fromRGB(139, 92, 246),
+        OnAccent = Color3.fromRGB(255, 255, 255),
+        Success = Color3.fromRGB(74, 200, 140),
+        Warning = Color3.fromRGB(232, 176, 78),
+        Danger = Color3.fromRGB(228, 96, 106),
+        ToggleOn = Color3.fromRGB(64, 196, 118),
+        ToggleKnob = Color3.fromRGB(252, 253, 252),
+        Info = Color3.fromRGB(110, 160, 240),
+    },
+    Graphite = {
+        Background = Color3.fromRGB(10, 10, 11),
+        Surface = Color3.fromRGB(17, 17, 19),
+        SurfaceAlt = Color3.fromRGB(22, 22, 25),
+        Elevated = Color3.fromRGB(27, 27, 31),
+        Border = Color3.fromRGB(255, 255, 255),
+        Line = Color3.fromRGB(255, 255, 255),
+        Text = Color3.fromRGB(240, 240, 242),
+        Muted = Color3.fromRGB(132, 132, 141),
+        Faint = Color3.fromRGB(84, 84, 92),
+        Accent = Color3.fromRGB(212, 175, 120),
+        OnAccent = Color3.fromRGB(14, 12, 9),
+        Success = Color3.fromRGB(122, 190, 142),
+        Warning = Color3.fromRGB(216, 176, 106),
+        Danger = Color3.fromRGB(214, 102, 102),
+        ToggleOn = Color3.fromRGB(64, 196, 118),
+        ToggleKnob = Color3.fromRGB(252, 253, 252),
+        Info = Color3.fromRGB(130, 152, 190),
+    },
+    Ash = {
+        Background = Color3.fromRGB(13, 14, 15),
+        Surface = Color3.fromRGB(20, 21, 23),
+        SurfaceAlt = Color3.fromRGB(25, 26, 29),
+        Elevated = Color3.fromRGB(31, 32, 36),
+        Border = Color3.fromRGB(255, 255, 255),
+        Line = Color3.fromRGB(255, 255, 255),
+        Text = Color3.fromRGB(236, 238, 240),
+        Muted = Color3.fromRGB(128, 133, 140),
+        Faint = Color3.fromRGB(80, 84, 90),
+        Accent = Color3.fromRGB(168, 186, 200),
+        OnAccent = Color3.fromRGB(14, 15, 16),
+        Success = Color3.fromRGB(122, 190, 142),
+        Warning = Color3.fromRGB(216, 176, 106),
+        Danger = Color3.fromRGB(214, 102, 102),
+        ToggleOn = Color3.fromRGB(64, 196, 118),
+        ToggleKnob = Color3.fromRGB(252, 253, 252),
+        Info = Color3.fromRGB(130, 152, 190),
+    },
+    Moss = {
+        Background = Color3.fromRGB(9, 12, 10),
+        Surface = Color3.fromRGB(15, 19, 16),
+        SurfaceAlt = Color3.fromRGB(20, 25, 21),
+        Elevated = Color3.fromRGB(25, 31, 26),
+        Border = Color3.fromRGB(255, 255, 255),
+        Line = Color3.fromRGB(255, 255, 255),
+        Text = Color3.fromRGB(234, 240, 235),
+        Muted = Color3.fromRGB(124, 138, 127),
+        Faint = Color3.fromRGB(78, 90, 80),
+        Accent = Color3.fromRGB(138, 190, 148),
+        OnAccent = Color3.fromRGB(10, 16, 11),
+        Success = Color3.fromRGB(138, 190, 148),
+        Warning = Color3.fromRGB(216, 176, 106),
+        Danger = Color3.fromRGB(214, 102, 102),
+        ToggleOn = Color3.fromRGB(64, 196, 118),
+        ToggleKnob = Color3.fromRGB(252, 253, 252),
+        Info = Color3.fromRGB(130, 152, 190),
+    },
+    Paper = {
+        Background = Color3.fromRGB(243, 243, 241),
+        Surface = Color3.fromRGB(252, 252, 251),
+        SurfaceAlt = Color3.fromRGB(246, 246, 244),
+        Elevated = Color3.fromRGB(255, 255, 255),
+        Border = Color3.fromRGB(0, 0, 0),
+        Line = Color3.fromRGB(0, 0, 0),
+        Text = Color3.fromRGB(24, 24, 26),
+        Muted = Color3.fromRGB(112, 112, 118),
+        Faint = Color3.fromRGB(168, 168, 172),
+        Accent = Color3.fromRGB(126, 96, 48),
+        OnAccent = Color3.fromRGB(252, 252, 251),
+        Success = Color3.fromRGB(58, 132, 82),
+        Warning = Color3.fromRGB(158, 116, 30),
+        Danger = Color3.fromRGB(176, 56, 56),
+        ToggleOn = Color3.fromRGB(64, 196, 118),
+        ToggleKnob = Color3.fromRGB(252, 253, 252),
+        Info = Color3.fromRGB(58, 96, 154),
+    },
+}
+
+local METRICS = {
+    Radius = 5,
+    RadiusSm = 3,
+    RowHeight = 36,
+    Pad = 14,
+    Gap = 8,
+    RailWidth = 164,
+    HeaderHeight = 48,
+    FooterHeight = 24,
+    BorderT = 0.90,
+    LineT = 0.86,
+    HoverT = 0.965,
+    ScrollBar = 2,
+}
+
+local tokens = Util.merge(Util.copy(PALETTES.Violet), METRICS)
+local activePalette = "Violet"
+
+local bindings = {}
+local liveCount = 0
+
+local function apply(entry)
+    local value = tokens[entry.token]
+    if value == nil then
+        return
+    end
+    local ok = pcall(function()
+        entry.instance[entry.property] = value
+    end)
+    if not ok then
+        entry.dead = true
+    end
+end
+
+function Theme.tokens()
+    return Util.copy(tokens)
+end
+
+function Theme.get(token, fallback)
+    local value = tokens[token]
+    if value == nil then
+        if fallback ~= nil then
+            return fallback
+        end
+        Log.warn("theme", "unknown token '" .. tostring(token) .. "'")
+        return Color3.new(1, 0, 1)
+    end
+    return value
+end
+
+function Theme.color(token)
+    local value = tokens[token]
+    if typeof(value) == "Color3" then
+        return value
+    end
+    Log.warn("theme", "token '" .. tostring(token) .. "' is not a colour")
+    return Color3.new(1, 0, 1)
+end
+
+function Theme.number(token, fallback)
+    local value = tokens[token]
+    if type(value) == "number" then
+        return value
+    end
+    return fallback or 0
+end
+
+function Theme.bind(instance, property, token)
+    if typeof(instance) ~= "Instance" then
+        Log.warn("theme", "bind expects an Instance")
+        return nil
+    end
+    if tokens[token] == nil then
+        Log.warn("theme", "bind to unknown token '" .. tostring(token) .. "'")
+    end
+    local entry = { instance = instance, property = property, token = token, dead = false }
+    function entry:Destroy()
+        Theme.unbind(self)
+    end
+    table.insert(bindings, entry)
+    liveCount += 1
+    apply(entry)
+    return entry
+end
+
+function Theme.rebind(entry, token)
+    if not entry or entry.dead then
+        return
+    end
+    entry.token = token
+    apply(entry)
+end
+
+function Theme.unbind(entry)
+    if entry and not entry.dead then
+        entry.dead = true
+        liveCount -= 1
+    end
+end
+
+local function compact()
+    local kept = {}
+    for _, entry in ipairs(bindings) do
+        if not entry.dead then
+            table.insert(kept, entry)
+        end
+    end
+    bindings = kept
+    liveCount = #kept
+end
+
+function Theme.Set(patch)
+    if type(patch) ~= "table" then
+        Log.warn("theme", "Set expects a table")
+        return Theme
+    end
+    local changed = false
+    for key, value in pairs(patch) do
+        if tokens[key] == nil and METRICS[key] == nil then
+            Log.warn("theme", "unknown token '" .. tostring(key) .. "' ignored")
+        elseif typeof(value) ~= typeof(tokens[key]) then
+            Log.field("theme", key, value, typeof(tokens[key]))
+        else
+            tokens[key] = value
+            changed = true
+        end
+    end
+    if not changed then
+        return Theme
+    end
+    compact()
+    for _, entry in ipairs(bindings) do
+        apply(entry)
+    end
+    Theme.Changed:Fire(tokens)
+    return Theme
+end
+
+function Theme.Preset(name)
+    local palette = PALETTES[name]
+    if not palette then
+        Log.warn("theme", "unknown preset '" .. tostring(name) .. "'")
+        return Theme
+    end
+    activePalette = name
+    return Theme.Set(palette)
+end
+
+function Theme.Presets()
+    local names = {}
+    for name in pairs(PALETTES) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+    return names
+end
+
+function Theme.Register(name, palette)
+    if type(name) ~= "string" or type(palette) ~= "table" then
+        Log.warn("theme", "Register expects (string, table)")
+        return Theme
+    end
+    local merged = Util.copy(PALETTES.Violet)
+    for key, value in pairs(palette) do
+        if merged[key] ~= nil then
+            merged[key] = value
+        end
+    end
+    PALETTES[name] = merged
+    return Theme
+end
+
+function Theme.Current()
+    return activePalette
+end
+
+function Theme.stats()
+    compact()
+    return { bindings = liveCount, palette = activePalette }
+end
+
+return Theme
+
+end
+Slate_modules["core/Motion"] = function(require)
+local TweenService = game:GetService("TweenService")
+local Log = require("core/Log")
+
+local Motion = {}
+
+Motion.Duration = {
+    Instant = 0,
+    Fast = 0.09,
+    Base = 0.15,
+    Slow = 0.24,
+    Lazy = 0.38,
+}
+
+local active = setmetatable({}, { __mode = "k" })
+local watchers = setmetatable({}, { __mode = "k" })
+local enabled = true
+local running = 0
+
+local function forget(instance)
+    local record = active[instance]
+    if record then
+        for _, tween in pairs(record) do
+            pcall(function()
+                tween:Cancel()
+            end)
+            running -= 1
+        end
+    end
+    active[instance] = nil
+    local watcher = watchers[instance]
+    if watcher then
+        watcher:Disconnect()
+        watchers[instance] = nil
+    end
+end
+
+local function watch(instance)
+    if watchers[instance] then
+        return
+    end
+    local ok, connection = pcall(function()
+        return instance.Destroying:Connect(function(
